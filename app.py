@@ -1,26 +1,11 @@
 import os
 import logging
-import threading
 import asyncio
 import requests
-from flask import Flask
+from flask import Flask, request
 from pypdf import PdfReader
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-
-# Flask Web Sunucusu (Render Health Check İçin)
-web_app = Flask(__name__)
-
-@web_app.route('/')
-def health_check():
-    return "Bot aktif ve çalışıyor!", 200
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    # Flask sunucusunun log gürültüsünü azaltmak için
-    import logging as flask_log
-    flask_log.getLogger('werkzeug').setLevel(flask_log.ERROR)
-    web_app.run(host="0.0.0.0", port=port)
 
 # Logging Ayarları
 logging.basicConfig(
@@ -32,6 +17,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 HF_SPACE_URL = os.getenv("HF_SPACE_URL", "https://burnav-go2-patent-asistani4.hf.space/gradio_api/call/predict")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")  # Render otomatik sunar (örn: https://app.onrender.com)
 
 # SSS.pdf Metin Okuma
 def get_pdf_text(pdf_path="sss.pdf"):
@@ -89,6 +75,9 @@ def query_hf_space(user_question: str) -> str:
         logger.error(f"HF Space isteğinde hata: {e}")
         return "Üzgünüm, şu an yanıt üretilemiyor. Lütfen daha sonra tekrar deneyiniz."
 
+# Telegram Bot Uygulamasını Oluştur
+telegram_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Merhaba! SSS rehberimiz üzerinden sorularınızı yanıtlamaya hazırım. Sorunuzu iletebilirsiniz.")
 
@@ -98,37 +87,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_response = query_hf_space(user_text)
     await status_message.edit_text(bot_response)
 
-async def start_bot():
-    if not TELEGRAM_BOT_TOKEN:
-        raise ValueError("TELEGRAM_BOT_TOKEN bulunamadı!")
+# Handler'ları Ekle
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+# Flask Web Sunucusu
+web_app = Flask(__name__)
 
-    # Botu manuel olarak ilklendirip başlatıyoruz
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
-    
-    logger.info("Bot başarıyla başlatıldı ve dinlemede.")
-    
-    # Sunucu kapana kadar uygulamanın ayakta kalmasını sağlayan sonsuz döngü
-    try:
-        while True:
-            await asyncio.sleep(3600)
-    except (KeyboardInterrupt, SystemExit):
-        await app.updater.stop()
-        await app.stop()
-        await app.shutdown()
+@web_app.route('/', methods=['GET'])
+def health_check():
+    return "Bot aktif ve Webhook modunda çalışıyor!", 200
 
-def main():
-    # Flask sunucusunu arka planda başlat
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
+@web_app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
+def webhook():
+    """Telegram'dan gelen bildirimleri işler."""
+    if request.method == "POST":
+        update_data = request.get_json(force=True)
+        update = Update.de_json(update_data, telegram_app.bot)
+        
+        # Async telegram_app çağrısını senkron Flask rotasında çalıştır
+        asyncio.run(telegram_app.initialize())
+        asyncio.run(telegram_app.process_update(update))
+        return "OK", 200
+    return "Invalid", 400
 
-    # Asyncio olay döngüsünü çalıştır
-    asyncio.run(start_bot())
+def set_telegram_webhook():
+    """Telegram'a Webhook adresini bildirir."""
+    if RENDER_EXTERNAL_URL:
+        webhook_url = f"{RENDER_EXTERNAL_URL.rstrip('/')}/{TELEGRAM_BOT_TOKEN}"
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook?url={webhook_url}"
+        try:
+            res = requests.get(url, timeout=10)
+            logger.info(f"Webhook kurulum sonucu: {res.json()}")
+        except Exception as e:
+            logger.error(f"Webhook ayarlanırken hata: {e}")
 
 if __name__ == "__main__":
-    main()
+    if not TELEGRAM_BOT_TOKEN:
+        raise ValueError("TELEGRAM_BOT_TOKEN bulunamadı!")
+        
+    # Telegram Webhook Kaydını Yap
+    set_telegram_webhook()
+    
+    # Flask Sunucusunu Başlat
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
