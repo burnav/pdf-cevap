@@ -17,6 +17,9 @@ def health_check():
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
+    # Flask sunucusunun log gürültüsünü azaltmak için
+    import logging as flask_log
+    flask_log.getLogger('werkzeug').setLevel(flask_log.ERROR)
     web_app.run(host="0.0.0.0", port=port)
 
 # Logging Ayarları
@@ -95,22 +98,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_response = query_hf_space(user_text)
     await status_message.edit_text(bot_response)
 
-def main():
+async def start_bot():
     if not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN bulunamadı!")
 
-    # Flask'ı ayrı bir thread üzerinde başlat
-    threading.Thread(target=run_flask, daemon=True).start()
-
-    # Telegram Bot Yapılandırması
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("Bot ve Web Sunucu başlatılıyor...")
+    # Botu manuel olarak ilklendirip başlatıyoruz
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(drop_pending_updates=True)
     
-    # Thread içi signal çakışmasını önleyen polling başlatma
-    app.run_polling(stop_signals=None)
+    logger.info("Bot başarıyla başlatıldı ve dinlemede.")
+    
+    # Sunucu kapana kadar uygulamanın ayakta kalmasını sağlayan sonsuz döngü
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except (KeyboardInterrupt, SystemExit):
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
+
+def main():
+    # Flask sunucusunu arka planda başlat
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
+    # Asyncio olay döngüsünü çalıştır
+    asyncio.run(start_bot())
 
 if __name__ == "__main__":
     main()
