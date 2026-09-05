@@ -1,22 +1,36 @@
 import os
 import logging
+import threading
+import asyncio
 import requests
+from flask import Flask
 from pypdf import PdfReader
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# Logging ayarları
+# Flask Web Sunucusu (Render Health Check İçin)
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def health_check():
+    return "Bot aktif ve çalışıyor!", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
+
+# Logging Ayarları
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Çevre Değişkenleri (Render'dan çekilecek)
+# Çevre Değişkenleri
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 HF_SPACE_URL = os.getenv("HF_SPACE_URL", "https://burnav-go2-patent-asistani4.hf.space/gradio_api/call/predict")
 
-# sss.pdf dosyasından metin çıkarma
+# SSS.pdf Metin Okuma
 def get_pdf_text(pdf_path="sss.pdf"):
     text = ""
     try:
@@ -29,18 +43,13 @@ def get_pdf_text(pdf_path="sss.pdf"):
         logger.error(f"PDF okunurken hata oluştu: {e}")
     return text
 
-# PDF içeriğini belleğe al
 FAQ_CONTEXT = get_pdf_text()
 
 def query_hf_space(user_question: str) -> str:
-    """Hugging Face Gradio SSE API'sine istek gönderir."""
-    headers = {
-        "Content-Type": "application/json"
-    }
+    headers = {"Content-Type": "application/json"}
     if HF_TOKEN:
         headers["Authorization"] = f"Bearer {HF_TOKEN}"
 
-    # Hugging Face Modelinize giden istem (Prompt) yapısı
     prompt = (
         f"Aşağıda SSS belgesinden alınan bilgiler yer almaktadır:\n"
         f"--- SSS BAŞLANGICI ---\n{FAQ_CONTEXT}\n--- SSS BİTİŞİ ---\n\n"
@@ -48,12 +57,9 @@ def query_hf_space(user_question: str) -> str:
         f"Lütfen yukarıdaki SSS bilgilerine dayanarak müşterinin sorusuna açık ve net bir cevap ver."
     )
 
-    payload = {
-        "data": [prompt]
-    }
+    payload = {"data": [prompt]}
 
     try:
-        # 1. Aşama: Olay çağrısını başlat ve event_id al
         response = requests.post(HF_SPACE_URL, json=payload, headers=headers, timeout=30)
         response.raise_for_status()
         event_id = response.json().get("event_id")
@@ -61,12 +67,10 @@ def query_hf_space(user_question: str) -> str:
         if not event_id:
             return "Modelden yanıt kimliği (event_id) alınamadı."
 
-        # 2. Aşama: Olay sonucunu SSE (Server-Sent Events) endpoint'inden çek
         result_url = f"{HF_SPACE_URL}/{event_id}"
         result_response = requests.get(result_url, headers=headers, timeout=60)
         result_response.raise_for_status()
 
-        # SSE çıktısını parse et
         lines = result_response.text.strip().split("\n")
         for line in lines:
             if line.startswith("data:"):
@@ -87,24 +91,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
-    # Müşteriye bekleniyor bilgisi ver
     status_message = await update.message.reply_text("Yanıt hazırlanıyor, lütfen bekleyiniz...")
-    
     bot_response = query_hf_space(user_text)
-    
     await status_message.edit_text(bot_response)
 
 def main():
     if not TELEGRAM_BOT_TOKEN:
-        raise ValueError("TELEGRAM_BOT_TOKEN çevre değişkeni bulunamadı!")
+        raise ValueError("TELEGRAM_BOT_TOKEN bulunamadı!")
 
+    # Flask'ı ayrı bir thread üzerinde başlat
+    threading.Thread(target=run_flask, daemon=True).start()
+
+    # Telegram Bot Yapılandırması
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("Bot başlatılıyor...")
-    app.run_polling()
+    logger.info("Bot ve Web Sunucu başlatılıyor...")
+    
+    # Thread içi signal çakışmasını önleyen polling başlatma
+    app.run_polling(stop_signals=None)
 
 if __name__ == "__main__":
     main()
