@@ -116,7 +116,10 @@ def retrieve_relevant_context(user_question: str, top_k=2) -> str:
     try:
         # Metinleri arama öncesi normalize et
         documents = FAQ_CHUNKS + [user_question]
-        vectorizer = TfidfVectorizer(ngram_range=(1, 2)).fit_transform(documents)
+        vectorizer = TfidfVectorizer(
+    analyzer='char_wb',      # Kelime sınırları içinde karakter tabanlı arama yapar
+    ngram_range=(3, 5)       # Kelimeleri 3, 4 ve 5'erli harf öbeklerine böler
+).fit_transform(documents)
         vectors = vectorizer.toarray()
 
         question_vector = vectors[-1]
