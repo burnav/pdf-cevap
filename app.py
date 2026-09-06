@@ -204,7 +204,7 @@ def query_hf_space(user_question: str) -> str:
 
 def process_message_async(message):
     try:
-        status_msg = bot.reply_to(message, "Yanıt hazırlanıyor, lütfen bekleyiniz...")
+        status_msg = bot.reply_to(message, "Yanıt hazırlanıyor, lütfen 2dk bekleyiniz...")
         bot_response = query_hf_space(message.text)
         bot.edit_message_text(
             chat_id=status_msg.chat.id, 
