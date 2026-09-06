@@ -23,7 +23,9 @@ HF_SPACE_URL = os.getenv(
     "HF_SPACE_URL", 
     "https://burnav-go2-patent-asistani4.hf.space/gradio_api/call/predict"
 ).strip("[]()'\" ")
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")  # Render tarafindan otomatik tanimlanir
+
+# Render Canlı URL'niz (Uykuyu önlemek için harici adres olmalıdır)
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://burnav-go2-patent-asistani4.onrender.com")
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN çevre değişkeni bulunamadı!")
@@ -31,7 +33,7 @@ if not TELEGRAM_BOT_TOKEN:
 # Bot Nesnesini Başlat
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=True, num_threads=10)
 
-# Flask Web Sunucusu (Render Health Check & Keep-Alive İçin)
+# Flask Web Sunucusu (Render Health Check İçin)
 web_app = Flask(__name__)
 
 @web_app.route('/')
@@ -48,26 +50,32 @@ def run_flask():
 
 def keep_alive():
     """
-    Render Free Tier'in 15 dakika hareketsizlik sonrasi sunucuyu 
-    uyku moduna (spin down) almasini engellemek için her 10 dakikada 
-    bir kendi kendine HTTP istegi atar.
+    Render Free Tier'in 15 dakika hareketsizlik sonrası sunucuyu 
+    uyku moduna almasını engellemek için harici URL'e düzenli istek atar.
     """
-    url = RENDER_EXTERNAL_URL or "http://127.0.0.1:10000/"
+    url = RENDER_EXTERNAL_URL
+    if not url.endswith("/"):
+        url += "/"
+        
     logger.info(f"Keep-alive servisi başlatıldı. Hedef URL: {url}")
+    time.sleep(30)  # Sunucunun ilk açılışı için kısa bekleme
+    
     while True:
-        time.sleep(600)  # 10 dakikada bir (600 saniye)
         try:
-            requests.get(url, timeout=10)
-            logger.info("Keep-alive ping başarılı (Sunucu uyanık tutuldu).")
+            res = requests.get(url, timeout=15)
+            logger.info(f"Keep-alive ping atıldı: Status {res.status_code}")
         except Exception as e:
             logger.warning(f"Keep-alive ping hatası: {e}")
+        
+        # 8 dakikada bir tetiklenir (Render 15 dakika kuralı için)
+        time.sleep(480)
 
 # --- PROFESYONEL RAG BÖLÜMÜ: SSS Yapısına Özel Akıllı Chunking ---
 
 def load_and_chunk_pdf(pdf_path="sss.pdf"):
     """
-    PDF'i okur ve metni rastgele karakterler yerine SSS yapisina uygun 
-    sekilde '---' veya [SORU] ayracina gore anlamli bloklara boler.
+    PDF'i okur ve metni SSS yapısına uygun şekilde '---' ayracına göre 
+    anlamlı soru-cevap bloklarına böler.
     """
     chunks = []
     try:
@@ -82,20 +90,18 @@ def load_and_chunk_pdf(pdf_path="sss.pdf"):
             logger.warning("PDF boş veya metin okunamadı.")
             return ["SSS bilgisi yüklenemedi."]
 
-        # 1. Metni '---' ayracina gore bloklara bol (En temiz SSS chunking yontemi)
+        # SSS bloklarına göre ayır
         raw_blocks = full_text.split("---")
         
         for block in raw_blocks:
             cleaned_block = block.strip()
-            # Cok kisa veya anlamsiz bloklari ele
             if len(cleaned_block) > 20:
                 chunks.append(cleaned_block)
 
-        # Eger '---' ile bolunemediysa alternatif bolumleme yap
         if len(chunks) <= 1:
             chunks = [c.strip() for c in re.split(r'\n(?=\[SORU\])', full_text) if len(c.strip()) > 20]
 
-        logger.info(f"PDF başarıyla okundu. Toplam {len(chunks)} anlamli SSS bloğuna ayrıldı.")
+        logger.info(f"PDF başarıyla okundu. Toplam {len(chunks)} anlamlı SSS bloğuna ayrıldı.")
     except Exception as e:
         logger.error(f"PDF işlenirken RAG hatası: {e}")
         chunks = ["SSS bilgisi yüklenemedi."]
@@ -108,18 +114,15 @@ FAQ_CHUNKS = load_and_chunk_pdf()
 def retrieve_relevant_context(user_question: str, top_k=2) -> str:
     """
     Kullanıcının sorusu ile SSS blokları arasındaki TF-IDF benzerliğini hesaplar
-    ve en alakalı soru-cevap bloklarını döndürür.
+    ve yazım hatalarını tolere eden harf öbekleri (char_wb) ile arar.
     """
     if not FAQ_CHUNKS:
         return ""
         
     try:
-        # Metinleri arama öncesi normalize et
         documents = FAQ_CHUNKS + [user_question]
-        vectorizer = TfidfVectorizer(
-    analyzer='char_wb',      # Kelime sınırları içinde karakter tabanlı arama yapar
-    ngram_range=(3, 5)       # Kelimeleri 3, 4 ve 5'erli harf öbeklerine böler
-).fit_transform(documents)
+        # analyzer='char_wb' ile basit harf hataları tolere edilir
+        vectorizer = TfidfVectorizer(analyzer='char_wb', ngram_range=(3, 5)).fit_transform(documents)
         vectors = vectorizer.toarray()
 
         question_vector = vectors[-1]
@@ -130,7 +133,6 @@ def retrieve_relevant_context(user_question: str, top_k=2) -> str:
 
         retrieved_texts = []
         for idx in related_indices:
-            # Benzerlik esigi
             if similarities[idx] > 0.01:
                 retrieved_texts.append(FAQ_CHUNKS[idx])
 
@@ -160,8 +162,8 @@ def query_hf_space(user_question: str) -> str:
         f"KATI KURALLAR:\n"
         f"1. Kendi genel kültür bilgini, dış bilgileri veya tahminlerini KESİNLİKLE KULLANMA.\n"
         f"2. Müşterinin sorduğu sorunun cevabı BİLGİ metninde AÇIKÇA geçmiyorsa, doğrudan ve aynen şu kelimelerle yanıt ver:\n"
-        f"   \"Bilgi için https://www.go2patents.com/ iletişim formumuz üzerinden bize ulaşabilirsiniz.\"\n"
-        f"3. Yanıtında asla kendi cümleni ekleme, uyarlama yapma veya spora/farklı konulara atıfta bulunma.\n"
+        f"   \"Bu konuda detaylı bilgi için iletişim formumuz üzerinden bize ulaşabilirsiniz.\"\n"
+        f"3. Yanıtında asla kendi cümleni ekleme, uyarlama yapma veya farklı konulara atıfta bulunma.\n"
         f"4. Sadece metinde geçen telefon, e-posta veya web adresi gibi bilgileri tam olarak aktar.\n\n"
         f"--- BİLGİ BAŞLANGICI ---\n{relevant_context}\n--- BİLGİ BİTİŞİ ---\n\n"
         f"Müşteri Sorusu: {user_question}\n\n"
@@ -204,7 +206,7 @@ def query_hf_space(user_question: str) -> str:
 
 def process_message_async(message):
     try:
-        status_msg = bot.reply_to(message, "Yanıt hazırlanıyor, lütfen 2dk bekleyiniz...")
+        status_msg = bot.reply_to(message, "Yanıt hazırlanıyor, lütfen bekleyiniz...")
         bot_response = query_hf_space(message.text)
         bot.edit_message_text(
             chat_id=status_msg.chat.id, 
@@ -222,6 +224,8 @@ def send_welcome(message):
 def handle_all_messages(message):
     threading.Thread(target=process_message_async, args=(message,), daemon=True).start()
 
+# --- UYGULAMA BAŞLANGICI ---
+
 if __name__ == "__main__":
     # 1. Flask Web Sunucusunu Başlat
     threading.Thread(target=run_flask, daemon=True).start()
@@ -232,31 +236,30 @@ if __name__ == "__main__":
 
     # 3. Telegram Polling
     logger.info("Telegram Botu dinlemeye geçiyor...")
-    
-    # Eski bağlantı ve webhook kalıntılarını temizle
-    try:
-        bot.remove_webhook()
-        time.sleep(2)  # Eski konteynerin kapanması için Telegram sunucusuna zaman tanı
-    except Exception as e:
-        logger.warning(f"Webhook kaldırılırken uyarı: {e}")
 
-    # Çakışma (409 Conflict) durumunda botun çökmesini engelleyen döngü
     while True:
         try:
-            # drop_pending_updates=True: Deploy sırasında biriken eski istekleri temizler
+            # Webhook ve eski takılı kalan güncellemeleri temizle
+            try:
+                bot.remove_webhook()
+                bot.delete_webhook(drop_pending_updates=True)
+                time.sleep(2)
+            except Exception as e:
+                logger.warning(f"Webhook temizleme uyarısı: {e}")
+
+            # Polling başlat (Geçerli parametrelerle)
             bot.infinity_polling(
                 timeout=10, 
                 long_polling_timeout=5, 
-                skip_pending=True, 
-                drop_pending_updates=True
+                skip_pending=True
             )
         except telebot.apihelper.ApiTelegramException as e:
             if e.error_code == 409:
-                logger.warning("409 Çakışma algılandı (Eski konteyner henüz kapanıyor). 5 saniye bekleniyor...")
+                logger.warning("409 Çakışma algılandı (Eski konteyner kapanıyor). 5 saniye bekleniyor...")
                 time.sleep(5)
             else:
                 logger.error(f"Telegram API Hatası: {e}")
-                time.sleep(3)
+                time.sleep(5)
         except Exception as e:
             logger.error(f"Beklenmeyen hata: {e}")
-            time.sleep(3)
+            time.sleep(5)
