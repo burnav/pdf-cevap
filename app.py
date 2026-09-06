@@ -97,10 +97,10 @@ def load_and_chunk_pdf(pdf_path="sss.pdf", chunk_size=800, overlap=100):
 # PDF Parçalarını Belleğe Al
 FAQ_CHUNKS = load_and_chunk_pdf(chunk_size=800, overlap=100)
 
-def retrieve_relevant_context(user_question: str, top_k=2) -> str:
+def retrieve_relevant_context(user_question: str, top_k=3) -> str:
     """
     Kullanıcının sorusu ile PDF parçaları arasındaki TF-IDF benzerliğini hesaplar
-    ve sadece en alakalı top_k adet parçayı döndürür.
+    ve en alakalı parçaları döndürür.
     """
     if not FAQ_CHUNKS:
         return ""
@@ -134,18 +134,22 @@ def retrieve_relevant_context(user_question: str, top_k=2) -> str:
 # --- HUGGING FACE İSTEĞİ BÖLÜMÜ ---
 
 def query_hf_space(user_question: str) -> str:
-    """Hugging Face Gradio SSE API'sine sadece RAG ile süzülmüş metni gönderir."""
+    """Hugging Face Gradio SSE API'sine geliştirilmiş prompt ile istek atar."""
     headers = {"Content-Type": "application/json"}
     if HF_TOKEN:
         headers["Authorization"] = f"Bearer {HF_TOKEN}"
 
-    relevant_context = retrieve_relevant_context(user_question, top_k=2)
+    relevant_context = retrieve_relevant_context(user_question, top_k=3)
 
+    # Bağlantıları ve URL'leri açıkça vermesi için yönlendirilmiş Prompt
     prompt = (
-        f"Aşağıdaki bilgiye dayanarak soruyu yanıtla:\n"
-        f"--- BİLGİ ---\n{relevant_context}\n--- BİTİŞ ---\n\n"
+        f"Sen yardımsever bir müşteri temsilcisisin. Aşağıda sağlanan bilgiye sadık kalarak kullanıcının sorusunu yanıtla.\n"
+        f"ÖNEMLİ KURALLAR:\n"
+        f"1. Sağlanan metinde geçen web adresi, URL, e-posta veya iletişim bilgilerini tam ve açık halleriyle yaz. Asla 'LINK' veya yer tutucu ibareler kullanma.\n"
+        f"2. Sadece sağlanan bilgideki verilere dayanarak cevap ver.\n\n"
+        f"--- SAĞLANAN BİLGİ ---\n{relevant_context}\n--- BİLGİ BİTİŞİ ---\n\n"
         f"Müşteri Sorusu: {user_question}\n\n"
-        f"Cevap:"
+        f"Yanıt:"
     )
 
     payload = {"data": [prompt]}
@@ -207,11 +211,9 @@ if __name__ == "__main__":
     logger.info("Flask Web Sunucu başlatıldı.")
 
     logger.info("Telegram Botu dinlemeye geçiyor...")
-    # Parametresiz olarak webhook kaldırılır
     try:
         bot.remove_webhook()
     except Exception as e:
         logger.warning(f"Webhook kaldırılırken uyarı: {e}")
 
-    # Polling başlatılır
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
