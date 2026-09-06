@@ -207,7 +207,11 @@ if __name__ == "__main__":
     logger.info("Flask Web Sunucu başlatıldı.")
 
     logger.info("Telegram Botu dinlemeye geçiyor...")
-    # Eski webhook ve birikmiş güncellemeleri doğru yöntemle temizle
-    bot.remove_webhook(drop_pending_updates=True)
-    # Hatalı parametre kaldırıldı, güvenli dinleme başlatıldı
+    # Parametresiz olarak webhook kaldırılır
+    try:
+        bot.remove_webhook()
+    except Exception as e:
+        logger.warning(f"Webhook kaldırılırken uyarı: {e}")
+
+    # Polling başlatılır
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
