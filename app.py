@@ -160,7 +160,7 @@ def query_hf_space(user_question: str) -> str:
         f"KATI KURALLAR:\n"
         f"1. Kendi genel kültür bilgini, dış bilgileri veya tahminlerini KESİNLİKLE KULLANMA.\n"
         f"2. Müşterinin sorduğu sorunun cevabı BİLGİ metninde AÇIKÇA geçmiyorsa, doğrudan ve aynen şu kelimelerle yanıt ver:\n"
-        f"   \"Bu konuda detaylı bilgi için iletişim formumuz üzerinden bize ulaşabilirsiniz.\"\n"
+        f"   \"Bilgi için https://www.go2patents.com/ iletişim formumuz üzerinden bize ulaşabilirsiniz.\"\n"
         f"3. Yanıtında asla kendi cümleni ekleme, uyarlama yapma veya spora/farklı konulara atıfta bulunma.\n"
         f"4. Sadece metinde geçen telefon, e-posta veya web adresi gibi bilgileri tam olarak aktar.\n\n"
         f"--- BİLGİ BAŞLANGICI ---\n{relevant_context}\n--- BİLGİ BİTİŞİ ---\n\n"
