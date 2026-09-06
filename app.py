@@ -118,7 +118,6 @@ def retrieve_relevant_context(user_question: str, top_k=2) -> str:
 
         retrieved_texts = []
         for idx in related_indices:
-            # Belirli bir eşik değerinin üzerindeki benzerlikleri al
             if similarities[idx] > 0.02:
                 retrieved_texts.append(FAQ_CHUNKS[idx])
 
@@ -140,7 +139,6 @@ def query_hf_space(user_question: str) -> str:
     if HF_TOKEN:
         headers["Authorization"] = f"Bearer {HF_TOKEN}"
 
-    # Sadece soruyla eşleşen küçük parça seçilir
     relevant_context = retrieve_relevant_context(user_question, top_k=2)
 
     prompt = (
@@ -209,5 +207,7 @@ if __name__ == "__main__":
     logger.info("Flask Web Sunucu başlatıldı.")
 
     logger.info("Telegram Botu dinlemeye geçiyor...")
-    bot.remove_webhook()
-    bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending_updates=True)
+    # Eski webhook ve birikmiş güncellemeleri doğru yöntemle temizle
+    bot.remove_webhook(drop_pending_updates=True)
+    # Hatalı parametre kaldırıldı, güvenli dinleme başlatıldı
+    bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
