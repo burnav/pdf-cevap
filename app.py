@@ -154,7 +154,7 @@ def query_hf_space(user_question: str) -> str:
 
     relevant_context = retrieve_relevant_context(user_question, top_k=2)
 
-prompt = (
+    prompt = (
         f"Sen Go2Patents firmasının resmi müşteri temsilcisisin.\n"
         f"GÖREVİN: Müşterinin sorusunu SADECE VE SADECE aşağıdaki BİLGİ metnine dayanarak yanıtlamaktır.\n\n"
         f"KATI KURALLAR:\n"
