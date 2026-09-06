@@ -232,9 +232,31 @@ if __name__ == "__main__":
 
     # 3. Telegram Polling
     logger.info("Telegram Botu dinlemeye geçiyor...")
+    
+    # Eski bağlantı ve webhook kalıntılarını temizle
     try:
         bot.remove_webhook()
+        time.sleep(2)  # Eski konteynerin kapanması için Telegram sunucusuna zaman tanı
     except Exception as e:
         logger.warning(f"Webhook kaldırılırken uyarı: {e}")
 
-    bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
+    # Çakışma (409 Conflict) durumunda botun çökmesini engelleyen döngü
+    while True:
+        try:
+            # drop_pending_updates=True: Deploy sırasında biriken eski istekleri temizler
+            bot.infinity_polling(
+                timeout=10, 
+                long_polling_timeout=5, 
+                skip_pending=True, 
+                drop_pending_updates=True
+            )
+        except telebot.apihelper.ApiTelegramException as e:
+            if e.error_code == 409:
+                logger.warning("409 Çakışma algılandı (Eski konteyner henüz kapanıyor). 5 saniye bekleniyor...")
+                time.sleep(5)
+            else:
+                logger.error(f"Telegram API Hatası: {e}")
+                time.sleep(3)
+        except Exception as e:
+            logger.error(f"Beklenmeyen hata: {e}")
+            time.sleep(3)
