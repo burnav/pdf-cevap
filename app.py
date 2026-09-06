@@ -27,7 +27,7 @@ if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN çevre değişkeni bulunamadı!")
 
 # Bot Nesnesini Başlat
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=True, num_threads=10)
 
 # Flask Web Sunucusu (Render Health Check İçin)
 web_app = Flask(__name__)
@@ -42,11 +42,12 @@ def run_flask():
     flask_log.getLogger('werkzeug').setLevel(flask_log.ERROR)
     web_app.run(host="0.0.0.0", port=port)
 
-# --- RAG BÖLÜMÜ: PDF Okuma ve Parçalama (Chunking) ---
+# --- RAG BÖLÜMÜ: Dinamik PDF Parçalama (Chunking) ---
 
-def load_and_chunk_pdf(pdf_path="sss.pdf", chunk_size=300):
+def load_and_chunk_pdf(pdf_path="sss.pdf", chunk_size=800, overlap=100):
     """
-    PDF'i okur, paragraf/soru-cevap bloklarına göre parçalara (chunks) ayırır.
+    PDF'i okur ve metni sabit karakter boyutlarında (chunk_size) ve 
+    birbirini örten (overlap) küçük parçalara böler.
     """
     chunks = []
     try:
@@ -57,15 +58,36 @@ def load_and_chunk_pdf(pdf_path="sss.pdf", chunk_size=300):
             if text:
                 full_text += text + "\n"
         
-        # Boş satırlardan veya soru başlıklarından mantıksal bölme yapalım
-        raw_chunks = re.split(r'\n\s*\n', full_text)
+        # Gereksiz birden fazla boşluğu ve satır sonlarını temizle
+        full_text = re.sub(r'\s+', ' ', full_text).strip()
         
-        for raw in raw_chunks:
-            cleaned = raw.strip()
-            if len(cleaned) > 20:  # Çok kısa anlamsız satırları ele
-                chunks.append(cleaned)
-                
-        logger.info(f"PDF başarıyla okundu. Toplam {len(chunks)} bilgi parçasına ayrıldı.")
+        if not full_text:
+            logger.warning("PDF boş veya metin okunamadı.")
+            return ["SSS bilgisi yüklenemedi."]
+
+        # Sabit boyutlu parçalara böl (Karakter bazlı sliding window)
+        start = 0
+        text_length = len(full_text)
+
+        while start < text_length:
+            end = start + chunk_size
+            chunk = full_text[start:end]
+            
+            # Kelimenin ortasından bölünmesini engellemek için son boşluktan kes
+            if end < text_length:
+                last_space = chunk.rfind(' ')
+                if last_space != -1:
+                    chunk = chunk[:last_space]
+                    end = start + last_space
+
+            cleaned_chunk = chunk.strip()
+            if len(cleaned_chunk) > 30:
+                chunks.append(cleaned_chunk)
+            
+            # Bir sonraki parçaya overlap (örtüşme) kadar geriden başla
+            start = end - overlap if (end - overlap) > start else end
+
+        logger.info(f"PDF başarıyla okundu. Toplam {len(chunks)} küçük parçaya ayrıldı.")
     except Exception as e:
         logger.error(f"PDF işlenirken RAG hatası: {e}")
         chunks = ["SSS bilgisi yüklenemedi."]
@@ -73,66 +95,57 @@ def load_and_chunk_pdf(pdf_path="sss.pdf", chunk_size=300):
     return chunks
 
 # PDF Parçalarını Belleğe Al
-FAQ_CHUNKS = load_and_chunk_pdf()
+FAQ_CHUNKS = load_and_chunk_pdf(chunk_size=800, overlap=100)
 
 def retrieve_relevant_context(user_question: str, top_k=2) -> str:
     """
     Kullanıcının sorusu ile PDF parçaları arasındaki TF-IDF benzerliğini hesaplar
-    ve en alakalı top_k adet parçayı birleştirip döndürür.
+    ve sadece en alakalı top_k adet parçayı döndürür.
     """
     if not FAQ_CHUNKS:
         return ""
         
     try:
-        # Soruyu ve tüm parçaları vektörleştir
         documents = FAQ_CHUNKS + [user_question]
         vectorizer = TfidfVectorizer().fit_transform(documents)
         vectors = vectorizer.toarray()
 
-        # Son eleman kullanıcı sorusu, öncekiler doküman parçaları
         question_vector = vectors[-1]
         chunk_vectors = vectors[:-1]
 
-        # Benzerlik skorlarını hesapla
         similarities = cosine_similarity([question_vector], chunk_vectors)[0]
-
-        # En yüksek skora sahip top_k parçanın indekslerini al
         related_indices = similarities.argsort()[-top_k:][::-1]
 
         retrieved_texts = []
         for idx in related_indices:
-            # Sadece belirli bir eşik değerinin üzerindeki anlamlı eşleşmeleri al (örneğin > 0.05)
-            if similarities[idx] > 0.05:
+            # Belirli bir eşik değerinin üzerindeki benzerlikleri al
+            if similarities[idx] > 0.02:
                 retrieved_texts.append(FAQ_CHUNKS[idx])
 
-        # Eğer hiç eşleşme bulunamadıysa ilk 2 parçayı veya genel bağlamı ver
         if not retrieved_texts:
-            retrieved_texts = FAQ_CHUNKS[:top_k]
+            retrieved_texts = [FAQ_CHUNKS[0]]
 
-        selected_context = "\n---\n".join(retrieved_texts)
-        logger.info(f"RAG: {len(retrieved_texts)} adet alakalı parça seçildi.")
-        return selected_context
+        logger.info(f"RAG: {len(FAQ_CHUNKS)} parçadan en alakalı {len(retrieved_texts)} parça seçildi.")
+        return "\n---\n".join(retrieved_texts)
 
     except Exception as e:
         logger.error(f"RAG arama sırasında hata: {e}")
-        # Hata durumunda ilk parçayı dön
-        return "\n---\n".join(FAQ_CHUNKS[:top_k])
+        return FAQ_CHUNKS[0] if FAQ_CHUNKS else ""
 
-# --- HUGGING FACE ISTEDI BÖLÜMÜ ---
+# --- HUGGING FACE İSTEĞİ BÖLÜMÜ ---
 
 def query_hf_space(user_question: str) -> str:
-    """Hugging Face Gradio SSE API'sine RAG ile küçültülmüş bağlamı gönderir."""
+    """Hugging Face Gradio SSE API'sine sadece RAG ile süzülmüş metni gönderir."""
     headers = {"Content-Type": "application/json"}
     if HF_TOKEN:
         headers["Authorization"] = f"Bearer {HF_TOKEN}"
 
-    # 1. RAG ile Müşteri Sorusuyla En Alakalı Parçayı Çek
+    # Sadece soruyla eşleşen küçük parça seçilir
     relevant_context = retrieve_relevant_context(user_question, top_k=2)
 
-    # 2. Küçültülmüş ve Odaklanmış Prompt Oluştur
     prompt = (
-        f"Aşağıdaki SSS bilgisine dayanarak soruyu yanıtla:\n"
-        f"--- SSS İLGİLİ BÖLÜM ---\n{relevant_context}\n--- BİTİŞ ---\n\n"
+        f"Aşağıdaki bilgiye dayanarak soruyu yanıtla:\n"
+        f"--- BİLGİ ---\n{relevant_context}\n--- BİTİŞ ---\n\n"
         f"Müşteri Sorusu: {user_question}\n\n"
         f"Cevap:"
     )
@@ -140,7 +153,7 @@ def query_hf_space(user_question: str) -> str:
     payload = {"data": [prompt]}
 
     try:
-        response = requests.post(HF_SPACE_URL, json=payload, headers=headers, timeout=30)
+        response = requests.post(HF_SPACE_URL, json=payload, headers=headers, timeout=15)
         response.raise_for_status()
         event_id = response.json().get("event_id")
 
@@ -148,7 +161,7 @@ def query_hf_space(user_question: str) -> str:
             return "Modelden yanıt kimliği (event_id) alınamadı."
 
         result_url = f"{HF_SPACE_URL}/{event_id}"
-        result_response = requests.get(result_url, headers=headers, timeout=60)
+        result_response = requests.get(result_url, headers=headers, timeout=30)
         result_response.raise_for_status()
 
         lines = result_response.text.strip().split("\n")
@@ -162,26 +175,39 @@ def query_hf_space(user_question: str) -> str:
 
         return "Yanıt işlenirken bir sorun oluştu."
 
+    except requests.exceptions.Timeout:
+        logger.error("Hugging Face isteği zaman aşımına uğradı.")
+        return "Yanıt süresi aşıldı. Lütfen tekrar deneyiniz."
     except Exception as e:
         logger.error(f"HF Space isteğinde hata: {e}")
         return "Üzgünüm, şu an yanıt üretilemiyor. Lütfen daha sonra tekrar deneyiniz."
 
-# Telegram Komut & Mesaj Dinleyicileri
+# --- TELEGRAM MESAJ İŞLEME (THREADED) ---
+
+def process_message_async(message):
+    try:
+        status_msg = bot.reply_to(message, "Yanıt hazırlanıyor, lütfen bekleyiniz...")
+        bot_response = query_hf_space(message.text)
+        bot.edit_message_text(
+            chat_id=status_msg.chat.id, 
+            message_id=status_msg.message_id, 
+            text=bot_response
+        )
+    except Exception as e:
+        logger.error(f"Mesaj işlenirken hata oluştu: {e}")
+
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     bot.reply_to(message, "Merhaba! SSS rehberimiz üzerinden sorularınızı yanıtlamaya hazırım. Sorunuzu iletebilirsiniz.")
 
 @bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
-    status_msg = bot.reply_to(message, "Yanıt hazırlanıyor, lütfen bekleyiniz...")
-    bot_response = query_hf_space(message.text)
-    bot.edit_message_text(chat_id=status_msg.chat.id, message_id=status_msg.message_id, text=bot_response)
+    threading.Thread(target=process_message_async, args=(message,), daemon=True).start()
 
 if __name__ == "__main__":
-    # 1. Flask Web Sunucusunu Arka Plan Thread'inde Başlat
     threading.Thread(target=run_flask, daemon=True).start()
     logger.info("Flask Web Sunucu başlatıldı.")
 
-    # 2. Telegram Bot Polling'i Ana Thread'de Çalıştır
     logger.info("Telegram Botu dinlemeye geçiyor...")
-    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+    bot.remove_webhook()
+    bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending_updates=True)
